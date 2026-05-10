@@ -1,224 +1,194 @@
 """
-Generate embeddings for all trademark images in the dataset
-Saves embeddings and metadata for fast similarity search
+Generate and cache logo embeddings for the dataset.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import pickle
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+
 import numpy as np
-from tqdm import tqdm
-from feature_extractor import FeatureExtractor
+
+from dataset.dataset_loader import get_default_dataset_root, scan_logo_dataset
+from models.feature_extractor import FeatureExtractor
+
+LOGGER = logging.getLogger(__name__)
 
 
 class EmbeddingGenerator:
-    """
-    Generate and manage embeddings for trademark dataset
-    """
-    
-    def __init__(self, dataset_path, model_name='resnet50'):
-        """
-        Initialize embedding generator
-        
-        Args:
-            dataset_path (str): Path to trademark images directory
-            model_name (str): Model architecture to use
-        """
-        self.dataset_path = dataset_path
+    def __init__(
+        self,
+        dataset_root: Optional[str] = None,
+        model_name: str = "auto",
+        embeddings_path: Optional[str] = None,
+        batch_size: int = 32,
+    ) -> None:
+        base_dir = Path(__file__).resolve().parents[1]
+        self.dataset_root = Path(dataset_root) if dataset_root else get_default_dataset_root(base_dir)
         self.model_name = model_name
+        self.batch_size = max(1, batch_size)
+        self.embeddings_path = Path(embeddings_path) if embeddings_path else base_dir / "models" / "logo_embeddings.pkl"
         self.extractor = FeatureExtractor(model_name=model_name)
-        self.embeddings = []
-        self.image_paths = []
-        self.image_names = []
-        
-    def collect_image_paths(self):
-        """
-        Collect all valid image paths from dataset directory
-        
-        Returns:
-            list: List of image file paths
-        """
-        supported_formats = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')
-        image_paths = []
-        
-        print(f"Scanning directory: {self.dataset_path}")
-        
-        # Walk through all subdirectories
-        for root, dirs, files in os.walk(self.dataset_path):
-            for file in files:
-                if file.lower().endswith(supported_formats):
-                    full_path = os.path.join(root, file)
-                    image_paths.append(full_path)
-        
-        print(f"Found {len(image_paths)} images")
-        return image_paths
-    
-    def generate_embeddings(self, save_path='embeddings.pkl', batch_size=32):
-        """
-        Generate embeddings for all images and save to disk
-        
-        Args:
-            save_path (str): Path to save embeddings
-            batch_size (int): Number of images to process at once
-        """
-        # Collect all image paths
-        image_paths = self.collect_image_paths()
-        
-        if not image_paths:
-            print("No images found in dataset directory!")
-            return
-        
-        print(f"Generating embeddings for {len(image_paths)} images...")
-        
-        embeddings = []
-        valid_paths = []
-        valid_names = []
-        
-        # Process images with progress bar
-        for img_path in tqdm(image_paths, desc="Extracting features"):
-            features = self.extractor.extract_features(img_path)
-            
-            if features is not None:
-                embeddings.append(features)
-                valid_paths.append(img_path)
-                valid_names.append(os.path.basename(img_path))
-        
-        # Convert to numpy array
-        embeddings = np.array(embeddings)
-        
-        print(f"Successfully generated {len(embeddings)} embeddings")
-        print(f"Embedding shape: {embeddings.shape}")
-        
-        # Prepare data to save
-        embedding_data = {
-            'embeddings': embeddings,
-            'image_paths': valid_paths,
-            'image_names': valid_names,
-            'model_name': self.model_name,
-            'embedding_dim': embeddings.shape[1]
+
+    def _build_payload(
+        self,
+        vectors: np.ndarray,
+        records,
+        skipped_invalid: int,
+        elapsed_seconds: float,
+    ) -> Dict[str, object]:
+        record_payload = [
+            {
+                "embedding": vectors[index].astype(np.float32),
+                "image_path": record.image_path,
+                "category": record.category,
+                "brand": record.brand,
+            }
+            for index, record in enumerate(records)
+        ]
+        image_paths = [record.image_path for record in records]
+        categories = [record.category for record in records]
+        brands = [record.brand for record in records]
+
+        return {
+            "embeddings": vectors.astype(np.float32),
+            "records": record_payload,
+            "image_paths": image_paths,
+            "categories": categories,
+            "brands": brands,
+            "dataset_root": str(self.dataset_root.resolve()),
+            "model_backend": self.extractor.backend,
+            "embedding_dim": int(vectors.shape[1]) if vectors.size else int(self.extractor.embedding_dim),
+            "num_images": len(image_paths),
+            "num_brands": len(set(brands)),
+            "num_categories": len(set(categories)),
+            "skipped_invalid": skipped_invalid,
+            "generated_at_epoch": time.time(),
+            "generation_time_seconds": elapsed_seconds,
         }
-        
-        # Save to pickle file
-        with open(save_path, 'wb') as f:
-            pickle.dump(embedding_data, f)
-        
-        print(f"Embeddings saved to {save_path}")
-        
-        self.embeddings = embeddings
-        self.image_paths = valid_paths
-        self.image_names = valid_names
-        
-        return embedding_data
-    
-    def load_embeddings(self, load_path='embeddings.pkl'):
-        """
-        Load embeddings from disk
-        
-        Args:
-            load_path (str): Path to embeddings file
-            
-        Returns:
-            dict: Embedding data
-        """
-        if not os.path.exists(load_path):
-            print(f"Embeddings file {load_path} not found!")
+
+    def load_embeddings(self) -> Optional[Dict[str, object]]:
+        if not self.embeddings_path.exists():
             return None
-        
-        with open(load_path, 'rb') as f:
-            embedding_data = pickle.load(f)
-        
-        self.embeddings = embedding_data['embeddings']
-        self.image_paths = embedding_data['image_paths']
-        self.image_names = embedding_data['image_names']
-        
-        print(f"Loaded {len(self.embeddings)} embeddings from {load_path}")
-        print(f"Embedding dimension: {embedding_data['embedding_dim']}")
-        
-        return embedding_data
-    
-    def add_new_trademark(self, image_path, embeddings_path='embeddings.pkl'):
-        """
-        Add a new trademark to existing embeddings
-        
-        Args:
-            image_path (str): Path to new trademark image
-            embeddings_path (str): Path to embeddings file
-        """
-        # Load existing embeddings
-        embedding_data = self.load_embeddings(embeddings_path)
-        
-        if embedding_data is None:
-            print("No existing embeddings found. Creating new database...")
-            self.embeddings = []
-            self.image_paths = []
-            self.image_names = []
-        
-        # Extract features for new image
-        print(f"Processing new trademark: {image_path}")
-        features = self.extractor.extract_features(image_path)
-        
-        if features is None:
-            print("Failed to extract features from new image!")
+
+        try:
+            with self.embeddings_path.open("rb") as file_handle:
+                return pickle.load(file_handle)
+        except Exception as exc:
+            LOGGER.warning("Failed to load cached embeddings: %s", exc)
+            return None
+
+    def _is_cache_valid(self, payload: Dict[str, object], expected_root: Path, expected_count: int) -> bool:
+        try:
+            if Path(str(payload.get("dataset_root", ""))).resolve() != expected_root.resolve():
+                return False
+
+            embeddings = payload.get("embeddings")
+            image_paths = payload.get("image_paths", [])
+            brands = payload.get("brands", [])
+            categories = payload.get("categories", [])
+            records = payload.get("records", [])
+
+            if embeddings is None:
+                return False
+
+            if len(embeddings) != len(image_paths):
+                return False
+
+            if len(image_paths) != len(brands):
+                return False
+
+            if len(image_paths) != expected_count:
+                return False
+
+            if categories and len(categories) != len(image_paths):
+                return False
+
+            if records and len(records) != len(image_paths):
+                return False
+
+            if isinstance(embeddings, np.ndarray) and embeddings.ndim != 2:
+                return False
+
+            return True
+        except Exception:
             return False
-        
-        # Add to existing data
-        self.embeddings = np.vstack([self.embeddings, features])
-        self.image_paths.append(image_path)
-        self.image_names.append(os.path.basename(image_path))
-        
-        # Save updated embeddings
-        updated_data = {
-            'embeddings': self.embeddings,
-            'image_paths': self.image_paths,
-            'image_names': self.image_names,
-            'model_name': self.model_name,
-            'embedding_dim': self.embeddings.shape[1]
-        }
-        
-        with open(embeddings_path, 'wb') as f:
-            pickle.dump(updated_data, f)
-        
-        print(f"Successfully added new trademark. Total: {len(self.embeddings)}")
-        return True
+
+    def generate_embeddings(self, force_recompute: bool = False) -> Dict[str, object]:
+        scan = scan_logo_dataset(str(self.dataset_root))
+        records = scan["records"]
+        skipped_invalid = int(scan.get("skipped_invalid", 0))
+        full_dataset_num_images = len(records)
+
+        if not records:
+            raise RuntimeError(f"No valid logo images found in dataset root: {self.dataset_root}")
+
+        if not force_recompute:
+            cached = self.load_embeddings()
+            if cached is not None and self._is_cache_valid(cached, self.dataset_root, len(records)):
+                LOGGER.info("Using cached embeddings from %s", self.embeddings_path)
+                return cached
+
+        LOGGER.info("Generating embeddings for %s images", len(records))
+        start_time = time.time()
+
+        image_paths = [record.image_path for record in records]
+        vectors, kept_paths = self.extractor.extract_batch_embeddings_with_paths(image_paths, batch_size=self.batch_size)
+
+        if vectors.size == 0:
+            raise RuntimeError("Embedding generation failed: no embeddings were produced.")
+
+        if vectors.shape[0] != len(kept_paths):
+            raise RuntimeError(
+                f"Embedding generation mismatch: vectors={vectors.shape[0]} kept_paths={len(kept_paths)}"
+            )
+
+        kept_records = [record for record in records if record.image_path in kept_paths]
+        if len(kept_records) != len(kept_paths):
+            lookup = {record.image_path: record for record in records}
+            kept_records = [lookup[path] for path in kept_paths if path in lookup]
+
+        payload = self._build_payload(
+            vectors=vectors,
+            records=kept_records,
+            skipped_invalid=skipped_invalid,
+            elapsed_seconds=time.time() - start_time,
+        )
+        payload["full_dataset_num_images"] = full_dataset_num_images
+        payload["indexed_num_images"] = len(kept_records)
+
+        self.embeddings_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.embeddings_path.open("wb") as file_handle:
+            pickle.dump(payload, file_handle)
+
+        LOGGER.info("Saved embeddings cache to %s", self.embeddings_path)
+        return payload
 
 
-def generate_sample_embeddings():
-    """
-    Generate embeddings for sample dataset
-    This is the main function to run for creating the embedding database
-    """
-    # Configuration
-    DATASET_PATH = "../dataset/trademarks"
-    OUTPUT_PATH = "embeddings.pkl"
-    MODEL_NAME = "resnet50"
-    
-    # Check if dataset exists
-    if not os.path.exists(DATASET_PATH):
-        print(f"Dataset directory not found: {DATASET_PATH}")
-        print("Please add trademark images to the dataset/trademarks folder")
-        return
-    
-    # Create embedding generator
+def load_or_generate_logo_embeddings(
+    dataset_root: Optional[str] = None,
+    embeddings_path: Optional[str] = None,
+    model_name: str = "auto",
+    force_recompute: bool = False,
+    batch_size: int = 32,
+) -> Dict[str, object]:
     generator = EmbeddingGenerator(
-        dataset_path=DATASET_PATH,
-        model_name=MODEL_NAME
+        dataset_root=dataset_root,
+        embeddings_path=embeddings_path,
+        model_name=model_name,
+        batch_size=batch_size,
     )
-    
-    # Generate and save embeddings
-    embedding_data = generator.generate_embeddings(
-        save_path=OUTPUT_PATH,
-        batch_size=32
-    )
-    
-    if embedding_data:
-        print("\n" + "="*60)
-        print("EMBEDDING GENERATION COMPLETED SUCCESSFULLY")
-        print("="*60)
-        print(f"Total images processed: {len(embedding_data['image_names'])}")
-        print(f"Embedding dimension: {embedding_data['embedding_dim']}")
-        print(f"Model used: {embedding_data['model_name']}")
-        print(f"Output file: {OUTPUT_PATH}")
-        print("="*60)
-    
+    return generator.generate_embeddings(force_recompute=force_recompute)
+
 
 if __name__ == "__main__":
-    generate_sample_embeddings()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    payload = load_or_generate_logo_embeddings()
+    print(f"Images: {payload['num_images']}")
+    print(f"Brands: {payload['num_brands']}")
+    print(f"Categories: {payload['num_categories']}")
+    print(f"Dim: {payload['embedding_dim']}")

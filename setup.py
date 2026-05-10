@@ -8,10 +8,12 @@ import sys
 import argparse
 from pathlib import Path
 
+from dataset.dataset_loader import get_default_dataset_root
+
 
 def check_dependencies():
     """Check if required packages are installed"""
-    required = ['torch', 'torchvision', 'faiss', 'PIL', 'numpy', 'tqdm']
+    required = ['torch', 'torchvision', 'faiss', 'PIL', 'numpy', 'tqdm', 'transformers', 'sentence_transformers']
     missing = []
     
     for package in required:
@@ -36,7 +38,7 @@ def check_dependencies():
 def create_directories():
     """Create necessary directories"""
     dirs = [
-        'dataset/trademarks',
+        'dataset/logos',
         'uploads',
         'models',
         'similarity'
@@ -54,18 +56,15 @@ def generate_embeddings(dataset_path: str):
     """Generate embeddings for all trademark images"""
     sys.path.insert(0, str(Path(__file__).parent / 'models'))
     
-    from generate_embeddings import EmbeddingGenerator
+    from generate_embeddings import load_or_generate_logo_embeddings
     
-    generator = EmbeddingGenerator(
-        dataset_path=dataset_path,
-        model_name='resnet50'
+    payload = load_or_generate_logo_embeddings(
+        dataset_root=dataset_path,
+        embeddings_path=str(Path(__file__).parent / 'models' / 'logo_embeddings.pkl'),
+        model_name='clip'
     )
-    
-    embedding_data = generator.generate_embeddings(
-        save_path=str(Path(__file__).parent / 'models' / 'embeddings.pkl')
-    )
-    
-    return embedding_data is not None
+
+    return payload is not None
 
 
 def build_faiss_index():
@@ -77,8 +76,8 @@ def build_faiss_index():
     base_dir = Path(__file__).parent
     
     build_index_from_embeddings(
-        embeddings_path=str(base_dir / 'models' / 'embeddings.pkl'),
-        output_index=str(base_dir / 'similarity' / 'faiss_index.bin'),
+        embeddings_path=str(base_dir / 'models' / 'logo_embeddings.pkl'),
+        output_index=str(base_dir / 'similarity' / 'faiss_index.index'),
         output_metadata=str(base_dir / 'similarity' / 'index_metadata.pkl')
     )
 
@@ -90,13 +89,13 @@ def main():
     parser.add_argument(
         '--dataset-path',
         type=str,
-        default='dataset/trademarks',
-        help='Path to trademark images directory'
+        default='',
+        help='Path to trademark images directory (default: auto-detect dataset/logos then dataset/train)'
     )
     parser.add_argument(
         '--skip-embeddings',
         action='store_true',
-        help='Skip embedding generation (use existing embeddings.pkl)'
+        help='Skip embedding generation (use existing logo_embeddings.pkl)'
     )
     parser.add_argument(
         '--skip-index',
@@ -122,7 +121,7 @@ def main():
     
     # Check for images
     base_dir = Path(__file__).parent
-    dataset_dir = base_dir / args.dataset_path
+    dataset_dir = (base_dir / args.dataset_path) if args.dataset_path else get_default_dataset_root(base_dir)
     
     images = list(dataset_dir.glob('**/*.jpg')) + \
              list(dataset_dir.glob('**/*.jpeg')) + \

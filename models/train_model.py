@@ -13,6 +13,9 @@ from PIL import Image
 import os
 import random
 import numpy as np
+from pathlib import Path
+
+from dataset.dataset_loader import get_default_dataset_root
 
 
 class SiameseNetwork(nn.Module):
@@ -235,7 +238,7 @@ def train_siamese_network(dataset_path, num_epochs=50, batch_size=32, learning_r
 
 if __name__ == "__main__":
     # Example usage
-    dataset_path = "../dataset/trademarks"
+    dataset_path = str(get_default_dataset_root(Path(__file__).resolve().parents[1]))
     
     if os.path.exists(dataset_path):
         model = train_siamese_network(
@@ -246,4 +249,4 @@ if __name__ == "__main__":
         )
     else:
         print(f"Dataset path {dataset_path} does not exist.")
-        print("Please add trademark images to the dataset/trademarks folder.")
+        print("Please add trademark images under dataset/logos or dataset/train.")

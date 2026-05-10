@@ -11,8 +11,14 @@ venv/
 dist/
 build/
 
+# Dataset (large files should stay local)
+dataset/**
+!dataset/
+!dataset/dataset_loader.py
+
 # Generated files
 *.pkl
+*.index
 *.bin
 embeddings.pkl
 faiss_index.bin

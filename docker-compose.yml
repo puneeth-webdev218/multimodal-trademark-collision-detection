@@ -12,8 +12,9 @@ services:
       - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
-      - ./models/embeddings.pkl:/app/models/embeddings.pkl:ro
-      - ./similarity/faiss_index.bin:/app/similarity/faiss_index.bin:ro
+      - ./models/logo_embeddings.pkl:/app/models/logo_embeddings.pkl:ro
+      - ./models/name_embeddings.pkl:/app/models/name_embeddings.pkl:ro
+      - ./similarity/faiss_index.index:/app/similarity/faiss_index.index:ro
       - ./similarity/index_metadata.pkl:/app/similarity/index_metadata.pkl:ro
     environment:
       - API_HOST=0.0.0.0

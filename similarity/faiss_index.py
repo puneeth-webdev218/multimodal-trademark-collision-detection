@@ -1,231 +1,211 @@
-"""
-FAISS Index Builder for Fast Similarity Search
-Creates and manages FAISS index for efficient nearest neighbor search
+"""FAISS index management for cosine similarity search.
+
+Uses normalized vectors with IndexFlatIP to implement cosine similarity.
+Falls back to a NumPy index if faiss is unavailable.
 """
 
-import numpy as np
-import faiss
+from __future__ import annotations
+
+import logging
 import pickle
-import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+
+try:
+    import faiss  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    faiss = None
+
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class CosineIndex:
+    vectors: np.ndarray
+
+    @property
+    def ntotal(self) -> int:
+        return int(self.vectors.shape[0])
+
+    def search(self, query: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
+        if self.vectors.size == 0:
+            scores = np.zeros((1, top_k), dtype=np.float32)
+            indices = -np.ones((1, top_k), dtype=np.int64)
+            return scores, indices
+
+        query = np.asarray(query, dtype=np.float32)
+        if query.ndim == 1:
+            query = query.reshape(1, -1)
+
+        query_norm = np.linalg.norm(query, axis=1, keepdims=True)
+        query = query / np.clip(query_norm, 1e-12, None)
+        scores = query @ self.vectors.T
+        top_indices = np.argsort(scores[0])[::-1][:top_k]
+        top_scores = scores[:, top_indices]
+
+        if len(top_indices) < top_k:
+            pad = top_k - len(top_indices)
+            top_scores = np.pad(top_scores, ((0, 0), (0, pad)), constant_values=0.0)
+            top_indices = np.pad(top_indices, (0, pad), constant_values=-1)
+
+        return top_scores.astype(np.float32), top_indices.reshape(1, -1).astype(np.int64)
 
 
 class FAISSIndex:
-    """
-    FAISS-based similarity search index
-    Supports fast nearest neighbor search for trademark embeddings
-    """
-    
-    def __init__(self, dimension=2048, index_type='L2'):
-        """
-        Initialize FAISS index
-        
-        Args:
-            dimension (int): Dimension of embedding vectors
-            index_type (str): 'L2' for Euclidean distance or 'cosine' for cosine similarity
-        """
-        self.dimension = dimension
+    def __init__(self, index_type: str = "cosine") -> None:
         self.index_type = index_type
-        self.index = None
-        self.image_paths = []
-        self.image_names = []
-        
-    def build_index(self, embeddings, image_paths, image_names, use_gpu=False):
-        """
-        Build FAISS index from embeddings
-        
-        Args:
-            embeddings (numpy.ndarray): Array of embedding vectors (N x D)
-            image_paths (list): List of image file paths
-            image_names (list): List of image filenames
-            use_gpu (bool): Whether to use GPU for indexing
-        """
-        print(f"Building FAISS index with {len(embeddings)} vectors...")
-        
-        self.image_paths = image_paths
-        self.image_names = image_names
-        
-        # Ensure embeddings are float32
-        embeddings = embeddings.astype('float32')
-        
-        # Create appropriate index type
-        if self.index_type == 'cosine':
-            # For cosine similarity, normalize vectors and use inner product
-            faiss.normalize_L2(embeddings)
-            self.index = faiss.IndexFlatIP(self.dimension)  # Inner Product (cosine)
-        else:
-            # L2 (Euclidean) distance
-            self.index = faiss.IndexFlatL2(self.dimension)
-        
-        # Use GPU if requested and available
-        if use_gpu and faiss.get_num_gpus() > 0:
-            print("Using GPU for FAISS indexing")
-            res = faiss.StandardGpuResources()
-            self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
-        
-        # Add vectors to index
-        self.index.add(embeddings)
-        
-        print(f"Index built successfully with {self.index.ntotal} vectors")
-        
-    def save_index(self, index_path='faiss_index.bin', metadata_path='index_metadata.pkl'):
-        """
-        Save FAISS index and metadata to disk
-        
-        Args:
-            index_path (str): Path to save FAISS index
-            metadata_path (str): Path to save metadata
-        """
-        # Save FAISS index
-        if self.index is not None:
-            # Convert GPU index to CPU for saving
-            if hasattr(self.index, 'index'):
-                cpu_index = faiss.index_gpu_to_cpu(self.index)
-            else:
-                cpu_index = self.index
-            
-            faiss.write_index(cpu_index, index_path)
-            print(f"FAISS index saved to {index_path}")
-        
-        # Save metadata
-        metadata = {
-            'image_paths': self.image_paths,
-            'image_names': self.image_names,
-            'dimension': self.dimension,
-            'index_type': self.index_type
-        }
-        
-        with open(metadata_path, 'wb') as f:
-            pickle.dump(metadata, f)
-        
-        print(f"Metadata saved to {metadata_path}")
-    
-    def load_index(self, index_path='faiss_index.bin', metadata_path='index_metadata.pkl', use_gpu=False):
-        """
-        Load FAISS index and metadata from disk
-        
-        Args:
-            index_path (str): Path to FAISS index file
-            metadata_path (str): Path to metadata file
-            use_gpu (bool): Whether to load index on GPU
-        """
-        # Load FAISS index
-        if os.path.exists(index_path):
-            self.index = faiss.read_index(index_path)
-            
-            # Move to GPU if requested
-            if use_gpu and faiss.get_num_gpus() > 0:
-                res = faiss.StandardGpuResources()
-                self.index = faiss.index_cpu_to_gpu(res, 0, self.index)
-            
-            print(f"FAISS index loaded from {index_path}")
-            print(f"Index contains {self.index.ntotal} vectors")
-        else:
-            print(f"Index file {index_path} not found!")
-            return False
-        
-        # Load metadata
-        if os.path.exists(metadata_path):
-            with open(metadata_path, 'rb') as f:
-                metadata = pickle.load(f)
-            
-            self.image_paths = metadata['image_paths']
-            self.image_names = metadata['image_names']
-            self.dimension = metadata['dimension']
-            self.index_type = metadata['index_type']
-            
-            print(f"Metadata loaded: {len(self.image_names)} images")
-        else:
-            print(f"Metadata file {metadata_path} not found!")
-            return False
-        
-        return True
-    
-    def add_to_index(self, embeddings, image_paths, image_names):
-        """
-        Add new embeddings to existing index
-        
-        Args:
-            embeddings (numpy.ndarray): New embedding vectors
-            image_paths (list): New image paths
-            image_names (list): New image names
-        """
+        self.index: Optional[Any] = None
+        self.metadata: Dict[str, object] = {}
+
+    @staticmethod
+    def _normalize(embeddings: np.ndarray) -> np.ndarray:
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings / np.clip(norms, 1e-12, None)
+
+    def _build_index(self, embeddings: np.ndarray) -> Any:
+        if embeddings.size == 0:
+            raise RuntimeError("Cannot build an index from an empty embedding matrix")
+        if embeddings.dtype != np.float32:
+            embeddings = embeddings.astype(np.float32)
+        embeddings = self._normalize(embeddings)
+        if faiss is None:
+            LOGGER.warning("faiss not available, using NumPy fallback index")
+            return CosineIndex(vectors=embeddings)
+
+        index = faiss.IndexFlatIP(int(embeddings.shape[1]))
+        index.add(embeddings)
+        return index
+
+    def save(self, index_path: Path, metadata_path: Path) -> None:
         if self.index is None:
-            print("Index not initialized! Build or load an index first.")
-            return
-        
-        embeddings = embeddings.astype('float32')
-        
-        if self.index_type == 'cosine':
-            faiss.normalize_L2(embeddings)
-        
-        self.index.add(embeddings)
-        self.image_paths.extend(image_paths)
-        self.image_names.extend(image_names)
-        
-        print(f"Added {len(embeddings)} vectors. Total: {self.index.ntotal}")
+            raise RuntimeError("Cannot save index before building/loading it.")
+
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if faiss is not None and hasattr(self.index, "ntotal") and not isinstance(self.index, CosineIndex):
+            faiss.write_index(self.index, str(index_path))
+        else:
+            with index_path.open("wb") as file_handle:
+                pickle.dump({"vectors": self.index.vectors}, file_handle)
+        with metadata_path.open("wb") as file_handle:
+            pickle.dump(self.metadata, file_handle)
+
+        LOGGER.info("Saved cosine index: %s", index_path)
+
+    def load(self, index_path: Path, metadata_path: Path) -> bool:
+        if not index_path.exists() or not metadata_path.exists():
+            return False
+
+        try:
+            if faiss is not None:
+                try:
+                    self.index = faiss.read_index(str(index_path))
+                except Exception:
+                    with index_path.open("rb") as file_handle:
+                        payload = pickle.load(file_handle)
+                    vectors = np.asarray(payload.get("vectors", []), dtype=np.float32)
+                    self.index = CosineIndex(vectors=vectors)
+            else:
+                with index_path.open("rb") as file_handle:
+                    payload = pickle.load(file_handle)
+                vectors = np.asarray(payload.get("vectors", []), dtype=np.float32)
+                self.index = CosineIndex(vectors=vectors)
+            with metadata_path.open("rb") as file_handle:
+                self.metadata = pickle.load(file_handle)
+            LOGGER.info("Loaded cosine index with %s vectors", self.index.ntotal)
+            return True
+        except Exception as exc:
+            LOGGER.warning("Failed to load cosine index: %s", exc)
+            return False
+
+    def _is_metadata_valid(self, embeddings_payload: Dict[str, object]) -> bool:
+        if not self.metadata:
+            return False
+
+        image_paths = embeddings_payload.get("image_paths", [])
+        brands = embeddings_payload.get("brands", [])
+        categories = embeddings_payload.get("categories", [])
+
+        if len(image_paths) != len(brands):
+            return False
+
+        if categories and len(categories) != len(image_paths):
+            return False
+
+        if int(self.metadata.get("num_images", -1)) != len(image_paths):
+            return False
+
+        if int(self.metadata.get("num_brands", -1)) != len(set(brands)):
+            return False
+
+        expected_root = str(embeddings_payload.get("dataset_root", ""))
+        if expected_root and self.metadata.get("dataset_root") != expected_root:
+            return False
+
+        return True
+
+    def load_or_build(
+        self,
+        embeddings_payload: Dict[str, object],
+        index_path: str,
+        metadata_path: str,
+        force_rebuild: bool = False,
+    ) -> "FAISSIndex":
+        index_p = Path(index_path)
+        metadata_p = Path(metadata_path)
+
+        if not force_rebuild and self.load(index_p, metadata_p) and self._is_metadata_valid(embeddings_payload):
+            return self
+
+        embeddings = np.asarray(embeddings_payload["embeddings"], dtype=np.float32)
+        self.index = self._build_index(embeddings)
+        self.metadata = {
+            "image_paths": embeddings_payload["image_paths"],
+            "brands": embeddings_payload["brands"],
+            "categories": embeddings_payload.get("categories", []),
+            "dataset_root": embeddings_payload.get("dataset_root"),
+            "embedding_dim": embeddings_payload.get("embedding_dim", embeddings.shape[1]),
+            "index_type": "IndexFlatIP (cosine)",
+            "num_images": len(embeddings_payload["image_paths"]),
+            "num_brands": len(set(embeddings_payload["brands"])),
+            "index_size": int(embeddings.shape[0]),
+        }
+        self.save(index_p, metadata_p)
+        if int(self.index.ntotal) != int(embeddings.shape[0]):
+            raise RuntimeError(
+                f"FAISS index size mismatch: index={self.index.ntotal} embeddings={embeddings.shape[0]}"
+            )
+        LOGGER.info("Built cosine index with %s vectors", self.index.ntotal)
+        return self
 
 
-def build_index_from_embeddings(embeddings_path='../models/embeddings.pkl', 
-                                 output_index='faiss_index.bin',
-                                 output_metadata='index_metadata.pkl',
-                                 use_gpu=False):
-    """
-    Build FAISS index from saved embeddings
-    
-    Args:
-        embeddings_path (str): Path to embeddings pickle file
-        output_index (str): Path to save FAISS index
-        output_metadata (str): Path to save metadata
-        use_gpu (bool): Whether to use GPU
-    """
-    print("="*60)
-    print("BUILDING FAISS INDEX")
-    print("="*60)
-    
-    # Load embeddings
-    if not os.path.exists(embeddings_path):
-        print(f"Embeddings file not found: {embeddings_path}")
-        return None
-    
-    with open(embeddings_path, 'rb') as f:
-        embedding_data = pickle.load(f)
-    
-    embeddings = embedding_data['embeddings']
-    image_paths = embedding_data['image_paths']
-    image_names = embedding_data['image_names']
-    dimension = embedding_data['embedding_dim']
-    
-    print(f"Loaded {len(embeddings)} embeddings of dimension {dimension}")
-    
-    # Create FAISS index
-    faiss_index = FAISSIndex(dimension=dimension, index_type='cosine')
-    
-    # Build index
-    faiss_index.build_index(
-        embeddings=embeddings,
-        image_paths=image_paths,
-        image_names=image_names,
-        use_gpu=use_gpu
-    )
-    
-    # Save index
-    faiss_index.save_index(
+def build_index_from_embeddings(
+    embeddings_path: str,
+    output_index: str,
+    output_metadata: str,
+    index_type: str = "cosine",
+) -> FAISSIndex:
+    with Path(embeddings_path).open("rb") as file_handle:
+        embeddings_payload = pickle.load(file_handle)
+
+    cosine_index = FAISSIndex(index_type=index_type)
+    return cosine_index.load_or_build(
+        embeddings_payload=embeddings_payload,
         index_path=output_index,
-        metadata_path=output_metadata
+        metadata_path=output_metadata,
+        force_rebuild=True,
     )
-    
-    print("="*60)
-    print("INDEX BUILT SUCCESSFULLY")
-    print("="*60)
-    
-    return faiss_index
 
 
 if __name__ == "__main__":
-    # Build index from embeddings
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    base_dir = Path(__file__).resolve().parents[1]
     build_index_from_embeddings(
-        embeddings_path='../models/embeddings.pkl',
-        output_index='faiss_index.bin',
-        output_metadata='index_metadata.pkl',
-        use_gpu=False
+        embeddings_path=str(base_dir / "models" / "logo_embeddings.pkl"),
+        output_index=str(base_dir / "similarity" / "faiss_index.index"),
+        output_metadata=str(base_dir / "similarity" / "index_metadata.pkl"),
     )

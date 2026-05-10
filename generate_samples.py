@@ -5,8 +5,10 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import random
 
+OUTPUT_DIR = os.path.join("dataset", "logos", "sample_generated")
+
 # Create dataset directory
-os.makedirs("dataset/trademarks", exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Sample brand names and colors for generating test logos
 brands = [
@@ -82,7 +84,7 @@ def create_logo(name, bg_color, text_color, filename):
 # Generate logos
 print("Generating sample trademark images...")
 for i, (name, bg, fg) in enumerate(brands):
-    filename = f"dataset/trademarks/logo_{i+1:02d}_{name.lower()}.png"
+    filename = os.path.join(OUTPUT_DIR, f"logo_{i+1:02d}_{name.lower()}.png")
     create_logo(name, bg, fg, filename)
 
 # Create some similar variations
@@ -95,8 +97,8 @@ variations = [
 ]
 
 for i, (name, bg, fg) in enumerate(variations):
-    filename = f"dataset/trademarks/logo_{len(brands)+i+1:02d}_{name.lower()}.png"
+    filename = os.path.join(OUTPUT_DIR, f"logo_{len(brands)+i+1:02d}_{name.lower()}.png")
     create_logo(name, bg, fg, filename)
 
 print(f"\nGenerated {len(brands) + len(variations)} sample trademark images!")
-print("Images saved to: dataset/trademarks/")
+print(f"Images saved to: {OUTPUT_DIR}")

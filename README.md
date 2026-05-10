@@ -92,7 +92,39 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Add Trademark Images
+### 3. Dataset Setup (Not Included in Git)
+
+The dataset is intentionally excluded from version control to keep the repository lightweight and fast to clone.
+
+- The `dataset/` directory is ignored by Git.
+- Download or copy the dataset manually on your machine.
+- Keep only code/config in the repository.
+
+Recommended dataset structure:
+
+```text
+dataset/
+├── train/
+│   ├── Accessories/
+│   │   ├── BrandA/
+│   │   │   ├── image1.jpg
+│   │   │   └── image2.png
+│   │   └── BrandB/
+│   ├── Clothes/
+│   ├── Electronic/
+│   └── ...
+└── dataset_loader.py
+```
+
+If your dataset is hosted remotely, download it after cloning, for example:
+
+```bash
+# Example only (replace with your real dataset source)
+mkdir -p dataset
+python scripts/download_dataset.py --output dataset/train
+```
+
+### 4. Add Trademark Images
 
 Place your trademark images in the `dataset/trademarks/` directory.
 
@@ -106,7 +138,7 @@ dataset/
     └── ...
 ```
 
-### 4. Generate Embeddings
+### 5. Generate Embeddings
 
 ```bash
 cd models
@@ -118,7 +150,7 @@ This will:
 - Extract features using ResNet50
 - Save embeddings to `embeddings.pkl`
 
-### 5. Build FAISS Index
+### 6. Build FAISS Index
 
 ```bash
 cd similarity
@@ -127,7 +159,7 @@ python faiss_index.py
 
 This creates the FAISS index for fast similarity search.
 
-### 6. Start the Backend API
+### 7. Start the Backend API
 
 ```bash
 cd backend
@@ -138,7 +170,7 @@ The API will be available at `http://localhost:8000`
 
 API Documentation: `http://localhost:8000/docs`
 
-### 7. Start the Frontend
+### 8. Start the Frontend
 
 ```bash
 cd frontend

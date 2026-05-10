@@ -6,6 +6,8 @@ torch>=2.0.0
 torchvision>=0.15.0
 numpy>=1.24.0
 Pillow>=9.5.0
+transformers>=4.40.0
+sentence-transformers>=2.6.0
 
 # FAISS for similarity search
 faiss-cpu>=1.7.4
@@ -23,9 +25,6 @@ python-dotenv>=1.0.0
 # Image Processing
 opencv-python>=4.8.0.0
 scikit-image>=0.21.0
-
-# Data Handling
-pickle5>=0.0.11; python_version < "3.8"
 
 # Optional: For Grad-CAM visualization
 grad-cam>=1.4.6

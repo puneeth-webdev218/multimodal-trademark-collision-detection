@@ -13,6 +13,8 @@ import cv2
 import os
 from typing import Tuple, Optional
 
+from dataset.dataset_loader import get_default_dataset_root
+
 
 class GradCAM:
     """
@@ -325,7 +327,7 @@ if __name__ == "__main__":
     visualizer = SimilarityGradCAM(model_name='resnet50')
     
     # Test with sample images if available
-    sample_dir = "../dataset/trademarks"
+    sample_dir = str(get_default_dataset_root())
     
     if os.path.exists(sample_dir):
         images = [f for f in os.listdir(sample_dir) 

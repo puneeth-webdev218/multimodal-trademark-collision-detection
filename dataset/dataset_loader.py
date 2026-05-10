@@ -1,314 +1,199 @@
-"""
-Dataset Loader for AI Trademark Collision Detection System
-Loads, preprocesses, and prepares trademark images for training and inference.
+"""Dataset loading utilities for trademark/logo images.
+
+This loader recursively scans the subset dataset and records:
+- image path
+- category folder
+- brand folder
+
+Corrupted or unsupported files are ignored.
 """
 
+from __future__ import annotations
+
+import logging
 import os
-import torch
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-from PIL import Image
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Set
+
 import numpy as np
-from typing import List, Tuple, Optional
-import random
+from PIL import Image, UnidentifiedImageError
+
+LOGGER = logging.getLogger(__name__)
+
+VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff"}
 
 
-class TrademarkDataset(Dataset):
-    """
-    PyTorch Dataset for loading trademark/logo images.
-    Handles image loading, resizing, and normalization.
-    """
-    
-    def __init__(
-        self,
-        image_dir: str,
-        transform: Optional[transforms.Compose] = None,
-        image_size: Tuple[int, int] = (224, 224)
-    ):
-        """
-        Initialize the dataset.
-        
-        Args:
-            image_dir: Directory containing trademark images
-            transform: Optional torchvision transforms
-            image_size: Target image size (height, width)
-        """
-        self.image_dir = image_dir
-        self.image_size = image_size
-        self.image_paths = self._load_image_paths()
-        
-        # Default transforms if none provided
-        if transform is None:
-            self.transform = transforms.Compose([
-                transforms.Resize(image_size),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],  # ImageNet normalization
-                    std=[0.229, 0.224, 0.225]
-                )
-            ])
-        else:
-            self.transform = transform
-    
-    def _load_image_paths(self) -> List[str]:
-        """Load all valid image paths from the directory."""
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
-        image_paths = []
-        
-        if not os.path.exists(self.image_dir):
-            print(f"Warning: Directory {self.image_dir} does not exist.")
-            return image_paths
-        
-        for root, _, files in os.walk(self.image_dir):
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in valid_extensions:
-                    image_paths.append(os.path.join(root, file))
-        
-        print(f"Loaded {len(image_paths)} images from {self.image_dir}")
-        return sorted(image_paths)
-    
-    def __len__(self) -> int:
-        return len(self.image_paths)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, str]:
-        """
-        Get an image and its path.
-        
-        Returns:
-            Tuple of (image_tensor, image_path)
-        """
-        image_path = self.image_paths[idx]
-        
-        try:
-            # Load and convert to RGB
-            image = Image.open(image_path).convert('RGB')
-            
-            # Apply transforms
-            if self.transform:
-                image = self.transform(image)
-            
-            return image, image_path
-            
-        except Exception as e:
-            print(f"Error loading image {image_path}: {e}")
-            # Return a blank image on error
-            blank = torch.zeros(3, *self.image_size)
-            return blank, image_path
-    
-    def get_image_names(self) -> List[str]:
-        """Get list of image filenames."""
-        return [os.path.basename(p) for p in self.image_paths]
+@dataclass(frozen=True)
+class LogoRecord:
+    category: str
+    brand: str
+    image_path: str
 
 
-class SiameseDataset(Dataset):
-    """
-    Dataset for Siamese Network training.
-    Creates pairs of similar and dissimilar trademark images.
-    """
-    
-    def __init__(
-        self,
-        image_dir: str,
-        pairs_per_image: int = 5,
-        transform: Optional[transforms.Compose] = None,
-        image_size: Tuple[int, int] = (224, 224)
-    ):
-        """
-        Initialize Siamese dataset.
-        
-        Args:
-            image_dir: Directory containing trademark images
-            pairs_per_image: Number of pairs to generate per image
-            transform: Optional torchvision transforms
-            image_size: Target image size
-        """
-        self.image_dir = image_dir
-        self.pairs_per_image = pairs_per_image
-        self.image_size = image_size
-        
-        # Load all image paths
-        self.base_dataset = TrademarkDataset(image_dir, transform, image_size)
-        self.image_paths = self.base_dataset.image_paths
-        self.transform = self.base_dataset.transform
-        
-        # Generate pairs
-        self.pairs = self._generate_pairs()
-    
-    def _generate_pairs(self) -> List[Tuple[int, int, int]]:
-        """
-        Generate pairs of images.
-        Returns list of (idx1, idx2, label) where label=1 for similar, 0 for different.
-        
-        Note: Without labeled data, we create synthetic pairs:
-        - Positive pairs: Same image with different augmentations
-        - Negative pairs: Different images
-        """
-        pairs = []
-        n_images = len(self.image_paths)
-        
-        if n_images < 2:
-            return pairs
-        
-        for i in range(n_images):
-            # Create positive pair (same image - will be augmented differently)
-            pairs.append((i, i, 1))
-            
-            # Create negative pairs (different images)
-            for _ in range(self.pairs_per_image - 1):
-                j = random.randint(0, n_images - 1)
-                while j == i:
-                    j = random.randint(0, n_images - 1)
-                pairs.append((i, j, 0))
-        
-        random.shuffle(pairs)
-        return pairs
-    
-    def __len__(self) -> int:
-        return len(self.pairs)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get a pair of images and their similarity label.
-        
-        Returns:
-            Tuple of (image1, image2, label)
-        """
-        idx1, idx2, label = self.pairs[idx]
-        
-        img1, _ = self.base_dataset[idx1]
-        img2, _ = self.base_dataset[idx2]
-        
-        return img1, img2, torch.tensor(label, dtype=torch.float32)
+def get_default_dataset_root(project_root: Optional[Path] = None) -> Path:
+    base = project_root or Path(__file__).resolve().parents[1]
+    candidates = [base / "dataset" / "subset", base / "dataset" / "train", base / "dataset" / "logos"]
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+    return candidates[0]
 
 
-def get_train_transforms(image_size: Tuple[int, int] = (224, 224)) -> transforms.Compose:
-    """Get training transforms with data augmentation."""
-    return transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.RandomCrop(image_size),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(degrees=15),
-        transforms.ColorJitter(
-            brightness=0.2,
-            contrast=0.2,
-            saturation=0.2,
-            hue=0.1
-        ),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
+def _is_valid_image(path: Path) -> bool:
+    if path.suffix.lower() not in VALID_IMAGE_EXTENSIONS:
+        return False
+
+    try:
+        with Image.open(path) as img:
+            img.verify()
+        return True
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False
+    except Exception:
+        return False
 
 
-def get_inference_transforms(image_size: Tuple[int, int] = (224, 224)) -> transforms.Compose:
-    """Get inference transforms (no augmentation)."""
-    return transforms.Compose([
-        transforms.Resize(image_size),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
+def _derive_category_and_brand(root: Path, image_path: Path) -> tuple[str, str]:
+    relative_parts = image_path.relative_to(root).parts
+
+    if not relative_parts:
+        return "uncategorized", image_path.parent.name or image_path.stem or "unknown"
+
+    category = relative_parts[0]
+    brand = image_path.parent.name or image_path.stem or "unknown"
+    return category, brand
 
 
-def create_data_loaders(
-    image_dir: str,
-    batch_size: int = 32,
-    num_workers: int = 4,
-    train_split: float = 0.8,
-    image_size: Tuple[int, int] = (224, 224)
-) -> Tuple[DataLoader, DataLoader]:
-    """
-    Create train and validation data loaders.
-    
-    Args:
-        image_dir: Directory containing images
-        batch_size: Batch size for training
-        num_workers: Number of worker processes
-        train_split: Fraction of data for training
-        image_size: Target image size
-    
-    Returns:
-        Tuple of (train_loader, val_loader)
-    """
-    # Create full dataset
-    full_dataset = TrademarkDataset(
-        image_dir=image_dir,
-        transform=get_train_transforms(image_size),
-        image_size=image_size
+def scan_logo_dataset(dataset_root: Optional[str] = None, sample_per_brand: Optional[int] = None) -> Dict[str, object]:
+    root = Path(dataset_root) if dataset_root else get_default_dataset_root()
+    root = root.resolve()
+
+    records: List[LogoRecord] = []
+    skipped_invalid = 0
+    categories: Set[str] = set()
+    brand_to_paths: Dict[str, List[str]] = {}
+    brand_to_category: Dict[str, str] = {}
+
+    LOGGER.info("Scanning dataset root: %s", root)
+
+    if not root.exists():
+        LOGGER.warning("Dataset root does not exist: %s", root)
+        return {
+            "dataset_root": str(root),
+            "records": [],
+            "categories": [],
+            "brands": [],
+            "brand_to_paths": {},
+            "category_to_brands": {},
+            "num_images": 0,
+            "num_brands": 0,
+            "num_categories": 0,
+            "skipped_invalid": 0,
+        }
+
+    for dirpath, _, filenames in os.walk(root):
+        directory = Path(dirpath)
+        for filename in filenames:
+            file_path = directory / filename
+            if file_path.suffix.lower() not in VALID_IMAGE_EXTENSIONS:
+                continue
+
+            if not _is_valid_image(file_path):
+                skipped_invalid += 1
+                LOGGER.debug("Skipping corrupted image: %s", file_path)
+                continue
+
+            category, brand = _derive_category_and_brand(root, file_path)
+            categories.add(category)
+            brand_to_category[brand] = category
+            # Avoid Path.resolve() on every file here; Windows can hit resource limits on large scans.
+            brand_to_paths.setdefault(brand, []).append(str(file_path))
+
+    if sample_per_brand and sample_per_brand > 0:
+        import random
+
+        sampled: Dict[str, List[str]] = {}
+        for brand, paths in brand_to_paths.items():
+            sampled[brand] = random.sample(paths, min(sample_per_brand, len(paths)))
+        brand_to_paths = sampled
+
+    for brand, paths in brand_to_paths.items():
+        category = brand_to_category.get(brand, "uncategorized")
+        for image_path in paths:
+            records.append(LogoRecord(category=category, brand=brand, image_path=image_path))
+
+    records.sort(key=lambda record: record.image_path)
+    brands = sorted(brand_to_paths.keys())
+    category_to_brands: Dict[str, List[str]] = {}
+    for brand, category in brand_to_category.items():
+        category_to_brands.setdefault(category, []).append(brand)
+
+    for brand_list in category_to_brands.values():
+        brand_list.sort()
+
+    LOGGER.info(
+        "Dataset scan complete: %s images, %s brands, %s categories, %s invalid skipped",
+        len(records),
+        len(brands),
+        len(categories),
+        skipped_invalid,
     )
-    
-    # Split into train and validation
-    n_total = len(full_dataset)
-    n_train = int(n_total * train_split)
-    n_val = n_total - n_train
-    
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [n_train, n_val]
-    )
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader
+
+    return {
+        "dataset_root": str(root),
+        "records": records,
+        "categories": sorted(categories),
+        "brands": brands,
+        "brand_to_paths": brand_to_paths,
+        "category_to_brands": category_to_brands,
+        "num_images": len(records),
+        "num_brands": len(brands),
+        "num_categories": len(categories),
+        "skipped_invalid": skipped_invalid,
+    }
 
 
-def load_single_image(
-    image_path: str,
-    image_size: Tuple[int, int] = (224, 224)
-) -> torch.Tensor:
-    """
-    Load and preprocess a single image for inference.
-    
-    Args:
-        image_path: Path to the image
-        image_size: Target image size
-    
-    Returns:
-        Preprocessed image tensor with batch dimension
-    """
-    transform = get_inference_transforms(image_size)
-    
-    image = Image.open(image_path).convert('RGB')
-    image_tensor = transform(image)
-    
-    # Add batch dimension
-    return image_tensor.unsqueeze(0)
+def validate_logo_dataset(dataset_root: Optional[str] = None) -> Dict[str, object]:
+    summary = scan_logo_dataset(dataset_root=dataset_root)
+    LOGGER.info("Validated dataset root: %s", summary["dataset_root"])
+    LOGGER.info("Total images loaded: %s", summary["num_images"])
+    LOGGER.info("Total categories: %s", summary["num_categories"])
+    for record in summary["records"]:
+        LOGGER.info("Image: %s", record.image_path)
+    return summary
+
+
+def load_image_rgb(image_path: str) -> Image.Image:
+    with Image.open(image_path) as img:
+        return img.convert("RGB")
+
+
+def preprocess_image(image: Image.Image, image_size: int = 224) -> Image.Image:
+    return image.convert("RGB").resize((image_size, image_size), Image.Resampling.LANCZOS)
+
+
+def preprocess_image_path(image_path: str, image_size: int = 224) -> Image.Image:
+    image = load_image_rgb(image_path)
+    return preprocess_image(image=image, image_size=image_size)
+
+
+def preprocess_images_to_batch(images: Sequence[Image.Image], image_size: int = 224) -> List[Image.Image]:
+    return [preprocess_image(image, image_size=image_size) for image in images]
+
+
+def l2_normalize(vectors: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return vectors / np.clip(norms, eps, None)
 
 
 if __name__ == "__main__":
-    # Example usage
-    import sys
-    
-    # Test dataset loading
-    dataset_path = os.path.join(os.path.dirname(__file__), "trademarks")
-    
-    if os.path.exists(dataset_path):
-        dataset = TrademarkDataset(dataset_path)
-        print(f"Dataset size: {len(dataset)}")
-        
-        if len(dataset) > 0:
-            img, path = dataset[0]
-            print(f"Image shape: {img.shape}")
-            print(f"Image path: {path}")
-    else:
-        print(f"Dataset path {dataset_path} does not exist.")
-        print("Please add trademark images to the dataset/trademarks folder.")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    summary = validate_logo_dataset()
+    print(f"Dataset root: {summary['dataset_root']}")
+    print(f"Images loaded: {summary['num_images']}")
+    print(f"Brands loaded: {summary['num_brands']}")
+    print(f"Categories loaded: {summary['num_categories']}")
+    print(f"Skipped invalid images: {summary['skipped_invalid']}")
