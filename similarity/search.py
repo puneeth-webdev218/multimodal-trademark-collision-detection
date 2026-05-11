@@ -43,6 +43,8 @@ class SimilaritySearch:
         self.faiss_index = FAISSIndex(index_type="cosine")
         self.embeddings_payload: Optional[Dict[str, object]] = None
         self.name_engine: Optional[NameSimilarityEngine] = None
+        self._clip_module = None
+        self._text_clip_model = None
         self._initialized = False
 
     def _load_precomputed_embeddings(self) -> Dict[str, object]:
@@ -230,6 +232,45 @@ class SimilaritySearch:
             },
         }
 
+    @staticmethod
+    def _normalize(embeddings: np.ndarray) -> np.ndarray:
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings / np.clip(norms, 1e-12, None)
+
+    def _ensure_text_encoder(self) -> None:
+        if self._clip_module is not None and self._text_clip_model is not None:
+            return
+
+        try:
+            import clip
+        except Exception as exc:
+            raise RuntimeError("OpenAI CLIP is required for text search") from exc
+
+        model, _ = clip.load("ViT-B/32", device=self.feature_extractor.device, jit=False)
+        model.eval()
+        self._clip_module = clip
+        self._text_clip_model = model
+
+    def _extract_text_embedding(self, query: str) -> np.ndarray:
+        self._ensure_text_encoder()
+        assert self._clip_module is not None
+        assert self._text_clip_model is not None
+
+        import torch
+
+        tokens = self._clip_module.tokenize([query]).to(self.feature_extractor.device)
+        with torch.no_grad():
+            text_features = self._text_clip_model.encode_text(tokens)
+
+        if isinstance(text_features, torch.Tensor):
+            vector = text_features.detach().cpu().numpy().astype(np.float32)
+        else:
+            vector = np.asarray(text_features, dtype=np.float32)
+
+        vector = vector.reshape(1, -1)
+        vector = self._normalize(vector)
+        return vector[0]
+
     def analyze_trademark(self, image_path: str, trademark_name: str, top_k: Optional[int] = None) -> Dict[str, object]:
         self._ensure_loaded()
         top_k = max(1, top_k or self.top_k_default)
@@ -286,6 +327,43 @@ class SimilaritySearch:
             },
             "detected": bool(best_logo >= 0.65),
             "top_score": best_logo,
+        }
+
+    def search_by_text(self, query: str, top_k: int = 5) -> Dict[str, object]:
+        self._ensure_loaded()
+
+        clean_query = (query or "").strip()
+        if not clean_query:
+            raise ValueError("Text query is required")
+
+        top_k = max(1, min(int(top_k), 20))
+
+        text_embedding = self._extract_text_embedding(clean_query)
+        image_results = self._search_image(text_embedding, top_k=top_k)
+        for item in image_results:
+            item["image_url"] = self._to_dataset_url(str(item.get("image_path", "")))
+
+        best_score = float(image_results[0]["logo_similarity"]) if image_results else 0.0
+
+        assert self.embeddings_payload is not None
+
+        return {
+            "search_type": "text",
+            "query": {
+                "text": clean_query,
+                "top_k": top_k,
+            },
+            "similar_trademarks": self._format_legacy_results(image_results),
+            "collision_risk": self._collision_risk_from_similarity(best_score),
+            "detected": best_score >= 0.65,
+            "top_score": best_score,
+            "dataset": {
+                "num_brands": int(self.embeddings_payload.get("num_brands", 0)),
+                "num_categories": int(self.embeddings_payload.get("num_categories", 0)),
+                "num_images": int(self.embeddings_payload.get("indexed_num_images", self.embeddings_payload.get("num_images", 0))),
+                "full_dataset_num_images": int(self.embeddings_payload.get("full_dataset_num_images", self.embeddings_payload.get("num_images", 0))),
+                "dataset_root": self.embeddings_payload.get("dataset_root"),
+            },
         }
 
     def get_statistics(self) -> Dict[str, object]:

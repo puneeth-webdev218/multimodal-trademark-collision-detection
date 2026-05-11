@@ -17,6 +17,7 @@ const withApiBase = (url) => {
 };
 
 const ANALYZE_ENDPOINT = withApiBase('/api/v1/analyze-trademark');
+const TEXT_SEARCH_ENDPOINT = withApiBase('/api/v1/search-text');
 
 const normalizeResultsPayload = (payload) => {
   if (!payload || typeof payload !== 'object') {
@@ -43,8 +44,11 @@ console.log('API Base URL:', API_BASE_URL || '(using relative /api/v1/* via dev 
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [results, setResults] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [imageResults, setImageResults] = useState(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [textQuery, setTextQuery] = useState('');
+  const [textResults, setTextResults] = useState(null);
+  const [textLoading, setTextLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const handleFileSelect = useCallback((file) => {
@@ -70,7 +74,14 @@ function App() {
       }
       return null;
     });
-    setResults(null);
+    setImageResults(null);
+    setError(null);
+  }, []);
+
+  // Separate reset for the new text-to-image search path.
+  const clearTextSearch = useCallback(() => {
+    setTextQuery('');
+    setTextResults(null);
     setError(null);
   }, []);
 
@@ -81,9 +92,9 @@ function App() {
       return;
     }
 
-    setLoading(true);
+    setImageLoading(true);
     setError(null);
-    setResults(null);
+    setImageResults(null);
     let timeoutId;
 
     console.log('Request started:', selectedFile.name);
@@ -125,7 +136,7 @@ function App() {
       const data = await response.json();
       console.log('Response received successfully:', data);
       
-      setResults(normalizeResultsPayload(data));
+      setImageResults(normalizeResultsPayload(data));
       console.log('Results updated');
 
     } catch (err) {
@@ -142,8 +153,69 @@ function App() {
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
-      setLoading(false);
+      setImageLoading(false);
       console.log('Request finished');
+    }
+  };
+
+  // New text search handler that posts only a text query and reuses the existing FAISS index.
+  const handleTextSearch = async () => {
+    const trimmedQuery = textQuery.trim();
+    if (!trimmedQuery) {
+      setError('Please enter a text query first');
+      return;
+    }
+
+    setTextLoading(true);
+    setError(null);
+    setTextResults(null);
+    let timeoutId;
+
+    try {
+      const formData = new FormData();
+      formData.append('query', trimmedQuery);
+      formData.append('top_k', '5');
+
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+      const response = await fetch(TEXT_SEARCH_ENDPOINT, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to process text query';
+        const bodyText = await response.text().catch(() => null);
+        if (bodyText) {
+          try {
+            const errorData = JSON.parse(bodyText);
+            errorMessage = errorData.detail || errorData.message || errorMessage;
+          } catch (e) {
+            console.error('Text error response text (non-JSON):', bodyText);
+          }
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      setTextResults(normalizeResultsPayload(data));
+    } catch (err) {
+      console.error('Text search error:', err);
+
+      if (err.name === 'AbortError') {
+        setError('Text search timed out. The server might be busy. Please try again.');
+      } else if (err.message && err.message.includes('Failed to fetch')) {
+        setError('Failed to connect to backend API. Confirm backend is running on port 8000 and CORS is configured.');
+      } else {
+        setError(err.message || 'An error occurred while processing the text query');
+      }
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      setTextLoading(false);
     }
   };
 
@@ -224,6 +296,78 @@ function App() {
           </div>
         )}
 
+        {/* Text Search Section */}
+        <section className="upload-section" style={{
+          backgroundColor: '#fff',
+          padding: '30px',
+          borderRadius: '8px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+          marginBottom: '30px',
+        }}>
+          <h2 style={{
+            marginTop: '0',
+            marginBottom: '12px',
+            color: '#333',
+            fontSize: '24px',
+          }}>
+            Text-to-Image Search
+          </h2>
+          <p style={{ marginTop: '0', color: '#666', marginBottom: '18px' }}>
+            Enter a concept, brand name, or description to search the existing FAISS index with CLIP text embeddings.
+          </p>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={textQuery}
+              onChange={(event) => setTextQuery(event.target.value)}
+              placeholder="e.g. blue circular logo with stripes"
+              disabled={textLoading}
+              style={{
+                flex: '1 1 320px',
+                minWidth: '260px',
+                padding: '12px 14px',
+                borderRadius: '8px',
+                border: '1px solid #d1d5db',
+                fontSize: '16px',
+              }}
+            />
+            <button
+              type="button"
+              onClick={handleTextSearch}
+              disabled={textLoading}
+              style={{
+                padding: '12px 20px',
+                backgroundColor: '#1f7a8c',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: textLoading ? 'not-allowed' : 'pointer',
+                opacity: textLoading ? 0.7 : 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              {textLoading ? 'Searching...' : 'Search by Text'}
+            </button>
+            <button
+              type="button"
+              onClick={clearTextSearch}
+              disabled={textLoading}
+              style={{
+                padding: '12px 20px',
+                backgroundColor: 'transparent',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '8px',
+                cursor: textLoading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Clear Text
+            </button>
+          </div>
+        </section>
+
         {/* Upload Section */}
         <section className="upload-section" style={{
           backgroundColor: '#fff',
@@ -246,23 +390,41 @@ function App() {
             onFileSelect={handleFileSelect}
             onUpload={handleUpload}
             onClear={handleClear}
-            loading={loading}
+            loading={imageLoading}
             error={error}
           />
         </section>
 
+        {/* Text Results Section */}
+        {(textLoading || textResults) && (
+          <section className="results-section" style={{
+            backgroundColor: '#fff',
+            padding: '30px',
+            borderRadius: '8px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+            marginBottom: '30px',
+          }}>
+            <h2 style={{
+              marginTop: '0',
+              marginBottom: '20px',
+              color: '#333',
+              fontSize: '24px',
+            }}>
+              Text Search Results
+            </h2>
+            <ResultsGrid results={textResults} loading={textLoading} loadingLabel="Analyzing text query..." />
+          </section>
+        )}
+
         {/* Results Section */}
-        {(loading || results) && (
+        {(imageLoading || imageResults) && (
           <section className="results-section" style={{
             backgroundColor: '#fff',
             padding: '30px',
             borderRadius: '8px',
             boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
           }}>
-            <ResultsGrid
-              results={results}
-              loading={loading}
-            />
+            <ResultsGrid results={imageResults} loading={imageLoading} />
           </section>
         )}
       </main>
@@ -282,9 +444,9 @@ function App() {
           Advanced Visual Similarity Matching using CLIP/ResNet50 + FAISS
         </p>
         <p style={{ margin: '8px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
-          Dataset: {results?.dataset?.num_images || '—'} images across{' '}
-          {results?.dataset?.num_brands || '—'} brands and{' '}
-          {results?.dataset?.num_categories || '—'} categories
+          Dataset: {imageResults?.dataset?.num_images || textResults?.dataset?.num_images || '—'} images across{' '}
+          {imageResults?.dataset?.num_brands || textResults?.dataset?.num_brands || '—'} brands and{' '}
+          {imageResults?.dataset?.num_categories || textResults?.dataset?.num_categories || '—'} categories
         </p>
       </footer>
     </div>

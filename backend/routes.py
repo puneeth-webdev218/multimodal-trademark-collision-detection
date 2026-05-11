@@ -148,6 +148,77 @@ async def _handle_upload(file: UploadFile, top_k: int, trademark_name: Optional[
         )
 
 
+async def _handle_text_search(query: str, top_k: int) -> JSONResponse:
+    start_time = time.time()
+
+    try:
+        LOGGER.info("Request received for /search-text")
+        clean_query = (query or "").strip()
+        if not clean_query:
+            raise HTTPException(status_code=400, detail="Query is required")
+
+        top_k = max(1, min(int(top_k), 20))
+
+        search_engine = get_search_engine()
+        analysis = await asyncio.wait_for(
+            asyncio.to_thread(
+                search_engine.search_by_text,
+                query=clean_query,
+                top_k=top_k,
+            ),
+            timeout=90,
+        )
+
+        LOGGER.info(
+            "Text query processed: best_similarity=%.4f duration=%.2fs",
+            float(analysis.get("top_score", 0.0)),
+            time.time() - start_time,
+        )
+
+        response = {
+            "status": "success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "processing_time_seconds": round(time.time() - start_time, 2),
+            "query": {
+                "text": clean_query,
+                "top_k": top_k,
+            },
+            "similar_trademarks": analysis.get("similar_trademarks", []),
+            "top_similar_logos": analysis.get("similar_trademarks", []),
+            "collision_risk": analysis.get("collision_risk", {}),
+            "detected": analysis.get("detected", False),
+            "top_score": analysis.get("top_score", 0.0),
+            "dataset": analysis.get("dataset", {}),
+            "search_type": analysis.get("search_type", "text"),
+        }
+
+        return JSONResponse(content=response)
+    except HTTPException:
+        raise
+    except TimeoutError:
+        LOGGER.warning("Text search timed out")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "status": "error",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "message": "Text search timeout",
+                "detail": "Request took too long. Confirm that the CLIP model and FAISS index are available.",
+            },
+        )
+    except Exception as exc:
+        LOGGER.exception("Text search failed")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "message": "Failed to process text query",
+                "detail": str(exc),
+            },
+        )
+
+
 @router.post("/analyze-trademark")
 async def analyze_trademark(
     file: UploadFile = File(...),
@@ -163,6 +234,14 @@ async def upload_compat(
     top_k: int = Form(5),
 ):
     return await _handle_upload(file=file, top_k=top_k, trademark_name=Path(file.filename or "uploaded_logo").stem)
+
+
+@router.post("/search-text")
+async def search_text(
+    query: str = Form(...),
+    top_k: int = Form(5),
+):
+    return await _handle_text_search(query=query, top_k=top_k)
 
 
 @router.get("/stats")

@@ -5,7 +5,7 @@ import { AlertTriangle, AlertCircle, CheckCircle, TrendingUp } from 'lucide-reac
  * ResultsGrid Component
  * Displays similar trademarks with proper result formatting
  */
-function ResultsGrid({ results, loading }) {
+function ResultsGrid({ results, loading, loadingLabel = 'Analyzing trademark image...' }) {
   if (loading) {
     return (
       <div style={{
@@ -23,7 +23,7 @@ function ResultsGrid({ results, loading }) {
           animation: 'spin 1s linear infinite',
         }} />
         <p style={{ marginTop: '20px', fontSize: '16px' }}>
-          Analyzing trademark image...
+          {loadingLabel}
         </p>
       </div>
     );
@@ -39,6 +39,8 @@ function ResultsGrid({ results, loading }) {
     dataset = {},
     uploaded_image = {},
     processing_time_seconds = 0,
+    query = {},
+    search_type = '',
   } = results;
 
   const getRiskColor = (riskLevel) => {
@@ -69,31 +71,60 @@ function ResultsGrid({ results, loading }) {
 
   return (
     <div style={{ marginTop: '30px' }}>
-      {/* Collision Risk Summary */}
-      <div style={{
-        padding: '20px',
-        backgroundColor: getRiskColor(collision_risk.risk_level),
-        color: 'white',
-        borderRadius: '8px',
-        marginBottom: '30px',
-      }}>
-        <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-          <div style={{ fontSize: '32px' }}>
-            {getRiskIcon(collision_risk.risk_level)}
-          </div>
-          <div style={{ flex: 1 }}>
-            <h3 style={{ margin: '0 0 8px 0' }}>
-              {collision_risk.risk_level || 'UNKNOWN'} Collision Risk
-            </h3>
-            <p style={{ margin: 0, opacity: 0.9 }}>
-              {collision_risk.message}
-            </p>
-            <p style={{ margin: '8px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
-              Similarity Score: {((collision_risk.similarity_score || 0) * 100).toFixed(1)}%
-            </p>
+      {/* Conditional render: Text Search vs Image Search */}
+      {search_type === 'text' ? (
+        <div style={{
+          padding: '20px',
+          backgroundColor: '#1f7a8c',
+          color: 'white',
+          borderRadius: '8px',
+          marginBottom: '30px',
+        }}>
+          <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+            <div style={{ fontSize: '32px' }}>
+              <TrendingUp size={24} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <h3 style={{ margin: '0 0 8px 0' }}>
+                Semantic Trademark Matches
+              </h3>
+              <p style={{ margin: 0, opacity: 0.9 }}>
+                Top results based on text similarity search
+              </p>
+              {similar_trademarks && similar_trademarks.length > 0 && (
+                <p style={{ margin: '8px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
+                  Top Match Similarity: {(similar_trademarks[0]?.similarity_percentage || 0).toFixed(1)}%
+                </p>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div style={{
+          padding: '20px',
+          backgroundColor: getRiskColor(collision_risk.risk_level),
+          color: 'white',
+          borderRadius: '8px',
+          marginBottom: '30px',
+        }}>
+          <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+            <div style={{ fontSize: '32px' }}>
+              {getRiskIcon(collision_risk.risk_level)}
+            </div>
+            <div style={{ flex: 1 }}>
+              <h3 style={{ margin: '0 0 8px 0' }}>
+                {collision_risk.risk_level || 'UNKNOWN'} Collision Risk
+              </h3>
+              <p style={{ margin: 0, opacity: 0.9 }}>
+                {collision_risk.message}
+              </p>
+              <p style={{ margin: '8px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
+                Similarity Score: {((collision_risk.similarity_score || 0) * 100).toFixed(1)}%
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {uploaded_image?.url && (
         <div style={{
@@ -117,6 +148,25 @@ function ResultsGrid({ results, loading }) {
           </div>
         </div>
       )}
+
+        {/* Text Query Display */}
+        {query?.text && (
+          <div style={{
+            display: 'flex',
+            gap: '16px',
+            alignItems: 'center',
+            marginBottom: '30px',
+            padding: '16px',
+            border: '1px solid #e0e0e0',
+            borderRadius: '8px',
+            backgroundColor: '#fcfcfc',
+          }}>
+            <div>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Text query</div>
+              <div style={{ fontSize: '14px', color: '#666', wordBreak: 'break-word' }}>{query.text}</div>
+            </div>
+          </div>
+        )}
 
       {/* Dataset Stats */}
       <div style={{
